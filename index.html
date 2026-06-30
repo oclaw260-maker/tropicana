@@ -1529,7 +1529,7 @@ function buildShiftReport(win) {
                          `closed at ${fmtDT(ev.end)}`;
           html += `<div style="font-size:.82rem; color: var(--muted); margin-top:4px;">
             • ${ev.notification.split(' (')[0]} — ${status}
-            <span style="color: var(--amber);">(${r.info.hours.toFixed(1)}h this shift)</span>
+            <span style="color: var(--amber);">(+${r.info.hours.toFixed(1)}h in this shift)</span>
           </div>`;
         });
         html += `</div>`;
@@ -1597,6 +1597,44 @@ function buildShiftReport(win) {
 // rename is a one-line change.
 const SITE_NAME = 'Tropicana';
 
+// Cumulative outage hours for a single still-down asset, computed from the
+// earliest open (or chain-back) event on that asset through `cutoff`. Touching
+// or overlapping intervals on the asset are merged into one continuous span,
+// so back-to-back notifications on the same outage count as a single outage.
+// Returns { hours, firstDownAt } where hours is the merged-span length in
+// hours (matching the dashboard's still-down callout).
+function cumulativeOutageForAsset(asset, cutoff) {
+  const intervals = ALL
+    .filter(e => e.asset === asset && e.start)
+    .map(e => ({
+      start: new Date(e.start).getTime(),
+      end:   new Date(e.end || cutoff).getTime()
+    }))
+    .filter(iv => iv.end > iv.start);
+  if (!intervals.length) return { hours: 0, firstDownAt: null };
+
+  const sorted = intervals.slice().sort((a, b) => a.start - b.start);
+  const unions = [];
+  let curS = sorted[0].start, curE = sorted[0].end;
+  for (let i = 1; i < sorted.length; i++) {
+    const iv = sorted[i];
+    if (iv.start <= curE) {                  // overlap OR exact touch
+      if (iv.end > curE) curE = iv.end;
+    } else {
+      unions.push([curS, curE]);
+      curS = iv.start; curE = iv.end;
+    }
+  }
+  unions.push([curS, curE]);
+
+  // The still-down outage is the *last* union (it extends to `cutoff`).
+  const [downStart, downEnd] = unions[unions.length - 1];
+  return {
+    hours: Math.max(0, (downEnd - downStart) / 3.6e6),
+    firstDownAt: new Date(downStart)
+  };
+}
+
 function buildShiftTextReport(win) {
   const fmtWin = w => {
     const date = w.start.toLocaleDateString('en-AU',
@@ -1639,6 +1677,13 @@ function buildShiftTextReport(win) {
     const title = r.ev.notification.split(' (')[0].toUpperCase();
     return r.info.startedBeforeShift ? `(CARRY OVER) ${title}` : title;
   };
+  // For ONGOING rows, show cumulative outage hours (from first-down through
+  // the relevant cutoff), not just the in-shift slice. COMPLETED rows keep
+  // their in-shift hours (work done this shift).
+  const hoursFor = (r, cutoff) =>
+    r.ev.still_down
+      ? cumulativeOutageForAsset(r.ev.asset, cutoff).hours
+      : r.info.hours;
 
   // Build the plain-text body using fixed-width column layout
   // Machine (7)  Hours (5)  Fault (variable)  Status (10)
@@ -1657,7 +1702,8 @@ function buildShiftTextReport(win) {
     txt += `${pad('MACHINE', 9)}${pad('HOURS', 7)}${pad('FAULT', 46)}STATUS\n`;
     txt += dashLine(72) + '\n';
     rows.forEach(r => {
-      txt += `${pad(r.ev.asset, 9)}${pad(r.info.hours.toFixed(1), 7)}${pad(faultOf(r), 46)}${statusOf(r)}\n`;
+      const h = hoursFor(r, win.end);
+      txt += `${pad(r.ev.asset, 9)}${pad(h.toFixed(1), 7)}${pad(faultOf(r), 46)}${statusOf(r)}\n`;
     });
   }
   txt += `\n`;
@@ -1674,8 +1720,9 @@ function buildShiftTextReport(win) {
       // For next-shift preview, every event is effectively a "carry over"
       // because it's still going to be down (or just opening) in the next shift
       const fault = r.info.startedBeforeShift ? `(CARRY OVER) ${title}` : title;
-      const status = r.ev.still_down ? 'ONGOING' : 'ONGOING';   // in the next window it's open
-      txt += `${pad(r.ev.asset, 9)}${pad(r.info.hours.toFixed(1), 7)}${pad(fault, 46)}${status}\n`;
+      const status = 'ONGOING';   // in the next window it's open
+      const h = hoursFor(r, nextEnd);
+      txt += `${pad(r.ev.asset, 9)}${pad(h.toFixed(1), 7)}${pad(fault, 46)}${status}\n`;
     });
   }
   txt += `\n—\n`;
@@ -1715,6 +1762,12 @@ function buildShiftHtmlReport(win, textBody) {
     const title = r.ev.notification.split(' (')[0].toUpperCase();
     return r.info.startedBeforeShift ? `(CARRY OVER) ${title}` : title;
   };
+  // ONGOING rows display cumulative hours (from first-down). COMPLETED rows
+  // show their in-shift hours. `cutoff` is the end of the relevant window.
+  const hoursFor = (r, cutoff) =>
+    r.ev.still_down
+      ? cumulativeOutageForAsset(r.ev.asset, cutoff).hours
+      : r.info.hours;
 
   // CSS — inline-friendly (we wrap each rule via style="…")
   // We use a single block of inline rules on the <table> wrapper since
@@ -1737,6 +1790,9 @@ function buildShiftHtmlReport(win, textBody) {
       const title = r.ev.notification.split(' (')[0].toUpperCase();
       return r.info.startedBeforeShift ? `(CARRY OVER) ${title}` : title;
     };
+    // Cutoff = end of the window this table represents, so ONGOING rows in
+    // "Next 12 hours" keep counting past where "Last 12 hours" stopped.
+    const windowEnd = isNext ? new Date(win.end.getTime() + 12 * 3600 * 1000) : win.end;
     let body = '';
     if (!rows.length) {
       body = `<tr><td colspan="4" style="${cellStyle} text-align:center; color:#888; ` +
@@ -1744,9 +1800,10 @@ function buildShiftHtmlReport(win, textBody) {
     } else {
       rows.forEach(r => {
         const statusColor = statusVal(r) === 'ONGOING' ? '#ff6b6b' : '#7fd47f';
+        const h = hoursFor(r, windowEnd);
         body += `<tr>
           <td style="${machineStyle}">${esc(r.ev.asset)}</td>
-          <td style="${hoursStyle}">${r.info.hours.toFixed(1)}</td>
+          <td style="${hoursStyle}">${h.toFixed(1)}</td>
           <td style="${faultStyle}">${esc(faultVal(r))}</td>
           <td style="${statusStyle} color:${statusColor};">${esc(statusVal(r))}</td>
         </tr>`;
