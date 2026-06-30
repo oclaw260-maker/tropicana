@@ -534,6 +534,16 @@ const eventType = n => {
   if (t.includes('REPLACE') || t.includes('REPAIR')) return 'maintenance';
   return 'commissioning';
 };
+// A "routine inspection" is a scheduled PM/DAILY entry that the system
+// records around a fault for shift-handover purposes. It's never interesting
+// on its own and shouldn't drive the overlap-with-fault amber border.
+const isRoutineInspection = n => {
+  if (!n) return false;
+  const t = n.toUpperCase();
+  return t.startsWith('DAILY') || t.startsWith('1M DAILY') || t.startsWith('2W PM')
+      || t.startsWith('500H PM') || t.startsWith('3000H TURBOCHARGER TIER 4 CHG')
+      || t.startsWith('CAPC');
+};
 const fmtDT = iso => {
   if (!iso) return '—';
   return new Date(iso).toLocaleString('en-AU', {
@@ -1467,13 +1477,18 @@ function buildShiftReport(win) {
   const eventsInShift = [...rows].sort((a,b) =>
     new Date(a.ev.start) - new Date(b.ev.start));
 
-  // Overlap detection: mark breakdown events that overlap another breakdown
-  // on the same asset within the shift window. Drives the amber-border row
-  // styling in the events table (matches the gantt's .bar.overlap treatment).
+  // Overlap detection: mark any two events on the same asset that overlap or
+  // exactly touch within the shift window. Pure routine inspections (DAILY,
+  // PM services) are excluded so two inspections that happen to touch don't
+  // false-flag — but if one side is a real fault, both rows get the amber
+  // treatment so a manager sees "truck is being worked on for X while Y is
+  // also open" at a glance. Drives the amber-border row styling in the
+  // events table (matches the gantt's .bar.overlap treatment).
   {
+    const interesting = r => !isRoutineInspection(r.ev.notification);
     const byAsset = {};
     eventsInShift.forEach(r => {
-      if (eventType(r.ev.notification) !== 'breakdown') return;
+      if (!interesting(r)) return;
       (byAsset[r.ev.asset] = byAsset[r.ev.asset] || []).push(r);
     });
     Object.values(byAsset).forEach(list => {
@@ -1482,8 +1497,8 @@ function buildShiftReport(win) {
           const a = list[i], b = list[j];
           const aS = new Date(a.ev.start), aE = a.ev.end ? new Date(a.ev.end) : win.end;
           const bS = new Date(b.ev.start), bE = b.ev.end ? new Date(b.ev.end) : win.end;
-          // Touching intervals count as overlap (aS == bE or bS == aE is treated
-          // as a back-to-back chain per the same-union rule).
+          // Touching intervals count as overlap (aS == bE or bS == aE is
+          // treated as a back-to-back chain per the same-union rule).
           if (aS <= bE && bS <= aE) { a.ev._overlap = true; b.ev._overlap = true; }
         }
       }
