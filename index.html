@@ -235,6 +235,7 @@
     .gantt .bar.commissioning { background: var(--blue); }
     .gantt .bar.breakdown { background: var(--red); }
     .gantt .bar.maintenance { background: var(--amber); color:#1a1a1a; }
+    .gantt .bar.service { background: var(--green); color:#0a0d12; }
     .gantt .bar.still { background: repeating-linear-gradient(45deg, var(--red), var(--red) 6px, #b91c1c 6px, #b91c1c 12px); color:#fff; }
   .gantt .bar.overlap { outline: 2px solid #f59e0b; outline-offset:1px; }
   .gantt .now { position:absolute; top:0; bottom:0; width:2px;
@@ -287,6 +288,7 @@
   .badge.commissioning { background: rgba(59,130,246,.15); color: var(--blue); border:1px solid rgba(59,130,246,.4); }
   .badge.breakdown { background: rgba(239,68,68,.15); color: var(--red); border:1px solid rgba(239,68,68,.4); }
   .badge.maintenance { background: rgba(245,158,11,.15); color: var(--amber); border:1px solid rgba(245,158,11,.4); }
+  .badge.service { background: rgba(16,185,129,.15); color: var(--green); border:1px solid rgba(16,185,129,.4); }
   .badge.done { background: rgba(16,185,129,.12); color: var(--green); border:1px solid rgba(16,185,129,.3); }
 
   .chart-box { height: 260px; position: relative; }
@@ -438,6 +440,7 @@
         <div class="gantt-wrap"><div class="gantt" id="gantt"></div></div>
         <div class="legend">
           <div class="item"><span class="swatch" style="background:var(--blue)"></span>Commissioning</div>
+          <div class="item"><span class="swatch" style="background:var(--green)"></span>Daily inspection / service</div>
           <div class="item"><span class="swatch" style="background:var(--red)"></span>Breakdown</div>
           <div class="item"><span class="swatch" style="background:var(--amber)"></span>Other maintenance</div>
           <div class="item"><span class="swatch" style="background:repeating-linear-gradient(45deg,var(--red),var(--red) 4px,#b91c1c 4px,#b91c1c 8px)"></span>Still down (no end time)</div>
@@ -522,6 +525,7 @@ const fleetColor = cls => ({
 })[cls] || '#6b7280';
 const eventType = n => {
   const t = (n||'').toUpperCase();
+  if (isRoutineInspection(n)) return 'service';
   if (t.includes('COMMISSION')) return 'commissioning';
   if (t.includes('BREAKDOWN') || t.includes('P1') || t.includes('ROLL OVER') || t.includes('HYDRAULIC')) return 'breakdown';
   if (t.includes('REPLACE') || t.includes('REPAIR')) return 'maintenance';
@@ -840,9 +844,11 @@ function render() {
                 ? '<span class="badge still">Still down</span>'
                 : (type === 'breakdown'
                     ? '<span class="badge breakdown">Breakdown</span>'
-                    : (e.notification.includes('ORDER')
-                        ? '<span class="badge maintenance">Repair</span>'
-                        : '<span class="badge commissioning">Commissioning</span>'))}</td>
+                    : (type === 'service'
+                        ? '<span class="badge service">Service</span>'
+                        : (e.notification.includes('ORDER')
+                            ? '<span class="badge maintenance">Repair</span>'
+                            : '<span class="badge commissioning">Commissioning</span>')))}</td>
         <td><strong>${e.asset}</strong></td>
         <td>${sapUrl
                 ? `<a href="${sapUrl}" target="_blank" rel="noopener noreferrer" title="Open in SAP S/4HANA" style="color:var(--blue);text-decoration:none;border-bottom:1px dotted var(--blue);">${e.notification.split(' (')[0]}</a>`
