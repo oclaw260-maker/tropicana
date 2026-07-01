@@ -73,11 +73,6 @@
     70%  { box-shadow:0 0 0 8px rgba(16,185,129,0); }
     100% { box-shadow:0 0 0 0 rgba(16,185,129,0); }
   }
-  .insight { background: linear-gradient(135deg, rgba(245,158,11,.12), rgba(245,158,11,.02));
-    border:1px solid rgba(245,158,11,.3); border-radius: 10px; padding:14px 18px;
-    margin-bottom: 20px; font-size:.95rem; }
-  .insight strong { color: var(--amber); }
-
   /* Shift comments (free-text box for supervisors) */
   .shift-comments { background: var(--panel); border: 1px solid var(--line);
     border-radius: 10px; margin-bottom: 12px; overflow: hidden;
@@ -409,8 +404,6 @@
     </div>
   </div>
 
-  <div class="insight" id="insight"></div>
-
   <div class="grid">
     <div class="col-3"><div class="kpi">          <div class="v" id="kpiEvents">–</div><div class="l">Notifications</div><div class="delta" id="kpiEventsD"></div></div></div>
     <div class="col-3"><div class="kpi red">      <div class="v" id="kpiDown">–</div>   <div class="l">Still Down 🔴</div><div class="delta" id="kpiDownD"></div></div></div>
@@ -714,28 +707,6 @@ function render() {
     document.getElementById('rangeLabel').textContent = 'No events in range';
   }
 
-  // Headline insight
-  if (!events.length) {
-    document.getElementById('insight').innerHTML =
-      `No notifications fall inside this date range. Try a wider window.`;
-  } else {
-    const topFleet = Object.entries(events.reduce((a,e) => {
-      const k = fleetClass(e.asset);
-      a[k] = (a[k]||0) + (e.duration_hrs || hrsBetween(e.start, e.end));
-      return a;
-    }, {})).sort((a,b)=>b[1]-a[1])[0];
-    const topAsset = Object.entries(events.reduce((a,e) => {
-      a[e.asset] = (a[e.asset]||0) + (e.duration_hrs || hrsBetween(e.start, e.end));
-      return a;
-    }, {})).sort((a,b)=>b[1]-a[1])[0];
-    document.getElementById('insight').innerHTML =
-      `<strong>${still.length}</strong> asset${still.length===1?'':'s'} currently down — ` +
-      `top offender <strong>${topAsset[0]}</strong> with <strong>${Math.round(topAsset[1])} hrs</strong> logged. ` +
-      `<strong>${topFleet[0]}</strong> dominate the downtime ledger. ` +
-      (still.length
-        ? `Open jobs waiting on parts/repair — flag the wiper + hydraulic repairs on <strong>DR3281</strong> and the LV4161 fuse-link (still chasing OEM part).`
-        : `All jobs in this window are closed. ✅`);
-  }
 
   // ── GANTT ──
   // Apply view filter (LV vs Heavy vs All) on top of date filter
