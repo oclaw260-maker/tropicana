@@ -232,12 +232,15 @@
         overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
         display:flex; align-items:center; cursor:pointer;
         box-shadow: 0 1px 0 rgba(0,0,0,.3); }
-    .gantt .bar.commissioning { background: var(--blue); }
-    .gantt .bar.breakdown { background: var(--red); }
-    .gantt .bar.maintenance { background: var(--amber); color:#1a1a1a; }
+    .gantt .bar.commissioning,
+    .gantt .bar.maintenance,
+    .gantt .bar.breakdown { background: var(--blue); }
     .gantt .bar.service { background: var(--green); color:#0a0d12; }
     .gantt .bar.still { background: repeating-linear-gradient(45deg, var(--red), var(--red) 6px, #b91c1c 6px, #b91c1c 12px); color:#fff; }
-  .gantt .bar.overlap { outline: 2px solid #f59e0b; outline-offset:1px; }
+    .gantt .bar.overlap { outline: 2px solid #fff; outline-offset:1px; box-shadow: 0 0 0 1px rgba(0,0,0,.4) inset; }
+    .gantt .bar[data-continued="1"]::before { content:'◀'; position:absolute;
+      left: 2px; top: 50%; transform: translateY(-50%); font-size: .65rem;
+      opacity: .85; }
   .gantt .now { position:absolute; top:0; bottom:0; width:2px;
     background: rgba(245,158,11,.8); z-index:5; pointer-events:none; }
   .gantt .now[data-first="1"]::after { content:"NOW"; position:absolute; top:-19px; left:-14px;
@@ -285,9 +288,10 @@
   .badge { display:inline-block; padding: 2px 8px; border-radius: 999px;
     font-size:.7rem; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
   .badge.down { background: rgba(239,68,68,.15); color: var(--red); border:1px solid rgba(239,68,68,.4); }
-  .badge.commissioning { background: rgba(59,130,246,.15); color: var(--blue); border:1px solid rgba(59,130,246,.4); }
-  .badge.breakdown { background: rgba(239,68,68,.15); color: var(--red); border:1px solid rgba(239,68,68,.4); }
-  .badge.maintenance { background: rgba(245,158,11,.15); color: var(--amber); border:1px solid rgba(245,158,11,.4); }
+  .badge.commissioning,
+  .badge.maintenance,
+  .badge.breakdown,
+  .badge.fault { background: rgba(59,130,246,.15); color: var(--blue); border:1px solid rgba(59,130,246,.4); }
   .badge.service { background: rgba(16,185,129,.15); color: var(--green); border:1px solid rgba(16,185,129,.4); }
   .badge.done { background: rgba(16,185,129,.12); color: var(--green); border:1px solid rgba(16,185,129,.3); }
 
@@ -412,6 +416,9 @@
     <div class="col-3"><div class="kpi blue">    <div class="v" id="kpiAssets">–</div><div class="l">Assets Touched</div><div class="delta" id="kpiAssetsD"></div></div></div>
     <div class="col-3"><div class="kpi purple"> <div class="v" id="kpiHours">–</div> <div class="l">Logged Downtime (hrs)</div><div class="delta" id="kpiHoursD"></div></div></div>
   </div>
+  <div class="grid" style="margin-top:16px;">
+    <div class="col-3"><div class="kpi green">    <div class="v" id="kpiMtbf">–</div>      <div class="l">MTBF · Mean Time Between Faults</div><div class="delta" id="kpiMtbfD"></div></div></div>
+  </div>
 
   <div class="grid" style="margin-top:16px;">
     <div class="col-12">
@@ -439,12 +446,10 @@
         </div>
         <div class="gantt-wrap"><div class="gantt" id="gantt"></div></div>
         <div class="legend">
-          <div class="item"><span class="swatch" style="background:var(--blue)"></span>Commissioning</div>
+          <div class="item"><span class="swatch" style="background:var(--red)"></span>Currently down (no end time)</div>
           <div class="item"><span class="swatch" style="background:var(--green)"></span>Daily inspection / service</div>
-          <div class="item"><span class="swatch" style="background:var(--red)"></span>Breakdown</div>
-          <div class="item"><span class="swatch" style="background:var(--amber)"></span>Other maintenance</div>
-          <div class="item"><span class="swatch" style="background:repeating-linear-gradient(45deg,var(--red),var(--red) 4px,#b91c1c 4px,#b91c1c 8px)"></span>Still down (no end time)</div>
-          <div class="item"><span class="swatch" style="outline:2px solid var(--amber); background:transparent"></span>Overlapping breakdown on same asset</div>
+          <div class="item"><span class="swatch" style="background:var(--blue)"></span>Everything else (faults, repairs, commissioning)</div>
+          <div class="item"><span class="swatch" style="outline:2px solid #fff; background:transparent"></span>Overlapping events on same asset</div>
         </div>
       </div>
     </div>
@@ -698,6 +703,41 @@ function render() {
   document.getElementById('kpiHours').textContent   = Math.round(totalLoggedHrs);
   document.getElementById('kpiHoursD').textContent  = events.length
     ? `≈ ${(totalLoggedHrs/24).toFixed(1)} equipment-days` : '—';
+
+  // ── MTBF (Mean Time Between Faults) ──
+  // For each asset, collect start times of *fault* events (skip service/inspection
+  // entries AND events still open) sorted chronologically. The inter-fault gaps
+  // (event N+1 start − event N start) are the "time between failures". MTBF =
+  // mean of those gaps, expressed in hours.
+  const faultStartsByAsset = {};
+  for (const e of events) {
+    if (e.still_down) continue;
+    if (isRoutineInspection(e.notification)) continue;
+    (faultStartsByAsset[e.asset] ||= []).push(new Date(e.start).getTime());
+  }
+  const gaps = [];
+  let assetsWithMultipleFaults = 0;
+  for (const asset in faultStartsByAsset) {
+    const starts = faultStartsByAsset[asset].sort((a,b) => a-b);
+    if (starts.length < 2) continue;
+    assetsWithMultipleFaults++;
+    for (let i = 1; i < starts.length; i++) gaps.push((starts[i] - starts[i-1]) / 3.6e6);
+  }
+  const mtbfEl     = document.getElementById('kpiMtbf');
+  const mtbfDeltaEl = document.getElementById('kpiMtbfD');
+  if (gaps.length === 0) {
+    mtbfEl.textContent = '—';
+    mtbfDeltaEl.textContent = events.length
+      ? 'Need ≥2 faults per asset'
+      : 'No events in range';
+  } else {
+    const mtbfHours = gaps.reduce((s,g) => s+g, 0) / gaps.length;
+    mtbfEl.textContent = mtbfHours >= 24
+      ? `${(mtbfHours/24).toFixed(1)} d`
+      : `${mtbfHours.toFixed(1)} h`;
+    mtbfDeltaEl.textContent = `${gaps.length} inter-fault gap${gaps.length===1?'':'s'} · ${assetsWithMultipleFaults} asset${assetsWithMultipleFaults===1?'':'s'}`;
+  }
+
   document.getElementById('rowCount').textContent   = events.length;
 
   // Range label
@@ -842,13 +882,9 @@ function render() {
       tr.innerHTML = `
         <td>${e.still_down
                 ? '<span class="badge still">Still down</span>'
-                : (type === 'breakdown'
-                    ? '<span class="badge breakdown">Breakdown</span>'
-                    : (type === 'service'
-                        ? '<span class="badge service">Service</span>'
-                        : (e.notification.includes('ORDER')
-                            ? '<span class="badge maintenance">Repair</span>'
-                            : '<span class="badge commissioning">Commissioning</span>')))}</td>
+                : (type === 'service'
+                    ? '<span class="badge service">Service</span>'
+                    : '<span class="badge fault">Fault</span>')}</td>
         <td><strong>${e.asset}</strong></td>
         <td>${sapUrl
                 ? `<a href="${sapUrl}" target="_blank" rel="noopener noreferrer" title="Open in SAP S/4HANA" style="color:var(--blue);text-decoration:none;border-bottom:1px dotted var(--blue);">${e.notification.split(' (')[0]}</a>`
@@ -873,7 +909,7 @@ function render() {
       const div = document.createElement('div');
       div.style.cssText = 'padding:8px 0; border-bottom:1px solid var(--line);';
       const t = eventType(e.notification);
-      const icon = e.still_down ? '🔧' : t==='breakdown' ? '⚠️' : '✅';
+      const icon = e.still_down ? '🔧' : t==='service' ? '🛠' : '⚠️';
       const tail = e.still_down ? ' · <span style="color:var(--red);">STILL DOWN</span>'
                                 : ' · <span style="color:var(--green);">closed</span>';
       const notifId = (e.notification.match(/\b(\d{8})\b/) || [''])[1] || (e.order && (e.order.match(/\((\d+)\)/) || [])[1]) || '';
@@ -929,12 +965,19 @@ function renderGantt(events) {
   });
 
   // overlaps
+  // Detect any two events on the same asset whose time ranges intersect
+  // (including exact-touch at endpoints). The previous < check missed pairs
+  // that shared an exact start/end, which is why TD0420 on 28-06-2026 (two
+  // breakdowns that both started at 18:00) never highlighted.
   Object.values(byAsset).forEach(list => {
     for (let i=0;i<list.length;i++) for (let j=i+1;j<list.length;j++) {
       const a = list[i], b = list[j];
+      // skip service entries from overlap highlighting — they're scheduled and
+      // benign, no operational meaning when stacked next to a fault.
+      if (isRoutineInspection(a.notification) && isRoutineInspection(b.notification)) continue;
       const aS = new Date(a.start), aE = a.end ? new Date(a.end) : now;
       const bS = new Date(b.start), bE = b.end ? new Date(b.end) : now;
-      if (aS < bE && bS < aE) { a._overlap = true; b._overlap = true; }
+      if (aS <= bE && bS <= aE) { a._overlap = true; b._overlap = true; }
     }
   });
 
@@ -1039,11 +1082,25 @@ function renderGantt(events) {
     byAsset[asset].forEach(e => {
       const s = new Date(e.start).getTime();
       const en = e.end ? new Date(e.end).getTime() : now.getTime();
-      const left = ((s - rangeStart) / rangeMs) * 100;
-      const w = Math.max(((en - s) / rangeMs) * 100, 0.6);
+      // Compute raw pixel-position percentages. Events that started before the
+      // visible window get pinned to the lane's left edge (0%); events that
+      // extend past the right edge get clipped at 100%. This keeps still-down
+      // records and long-running faults from bleeding into the asset-label
+      // column on narrow zoom levels.
+      let left = ((s - rangeStart) / rangeMs) * 100;
+      let end  = ((en - rangeStart) / rangeMs) * 100;
+      const startedBeforeWindow = left < 0;
+      if (left < 0) left = 0;
+      if (end > 100) end = 100;
+      const w = Math.max(end - left, 0.6);
       const bar = document.createElement('div');
       bar.className = 'bar ' + (e.still_down ? 'still' : eventType(e.notification));
-      if (e._overlap && eventType(e.notification) === 'breakdown') bar.classList.add('overlap');
+      if (e._overlap) bar.classList.add('overlap');
+      // If the event extends past the visible window, leave a small left cap so
+      // the bar reads as "continues from earlier" rather than starting at edge.
+      if (startedBeforeWindow && (s - rangeStart) < rangeMs) {
+        bar.dataset.continued = '1';
+      }
       bar.style.left = left + '%';
       bar.style.width = w + '%';
       const lbl = (e.notification.split(' (')[0] || '').slice(0, 28);
